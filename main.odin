@@ -1,136 +1,169 @@
 package resonance
 
-// Entry point. For now this is a thin harness that opens a window, accepts a
-// .mid file via drag-and-drop (or a command-line argument), parses it with the
-// MIDI parser, and shows a short summary. The piano-roll renderer, audio
-// synthesis, and playback controls are layered on top of this in later files.
+// Entry point and playback engine. Opens a window, loads MIDI files (via
+// drag-and-drop or a command-line argument), advances a song clock, fires
+// note events into the synth, and draws the piano roll + overlay each frame.
 
 import "core:fmt"
-import "core:strings"
+import "core:path/filepath"
 import "core:os"
+import "core:strings"
 import rl "vendor:raylib"
 
 WINDOW_WIDTH  :: 1280
 WINDOW_HEIGHT :: 720
 
+END_PAD_SEC :: 1.5 // silence held at the end before looping
+
+Player :: struct {
+	loaded:       bool,
+	song:         Song,
+	path:         string, // owned full path
+	display_name: string, // owned base name, for the overlay
+	time:         f64,     // current song time in seconds
+	speed:        f64,     // 0.5 / 1 / 2
+	paused:       bool,
+	cursor:       int,     // index into song.events
+}
+
 main :: proc() {
+	rl.SetConfigFlags({.WINDOW_RESIZABLE, .MSAA_4X_HINT})
 	rl.InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Resonance — MIDI Piano Roll")
 	defer rl.CloseWindow()
 	rl.SetTargetFPS(60)
 
-	loaded: bool
-	file: MIDI_File
-	current_path: string // owned (cloned); empty when nothing is loaded
-	load_error: MIDI_Error = .None
+	audio: Audio
+	audio_init(&audio)
+	defer audio_shutdown(&audio)
 
-	// Allow loading a file passed on the command line: `resonance song.mid`.
+	player := Player{speed = 1}
+
 	if len(os.args) > 1 {
-		loaded, current_path, load_error = try_load(&file, os.args[1], loaded, current_path)
+		load_song(&player, &audio, os.args[1])
 	}
 
 	for !rl.WindowShouldClose() {
-		// --- Input: drag-and-drop a .mid file onto the window ---------------
+		screen_w := f32(rl.GetScreenWidth())
+		screen_h := f32(rl.GetScreenHeight())
+
+		// --- Input ----------------------------------------------------------
 		if rl.IsFileDropped() {
 			dropped := rl.LoadDroppedFiles()
 			defer rl.UnloadDroppedFiles(dropped)
 			if dropped.count > 0 {
-				path := string(dropped.paths[0])
-				loaded, current_path, load_error = try_load(&file, path, loaded, current_path)
+				load_song(&player, &audio, string(dropped.paths[0]))
 			}
 		}
+		handle_controls(&player, &audio)
+
+		// --- Update ---------------------------------------------------------
+		if player.loaded && !player.paused {
+			player.time += f64(rl.GetFrameTime()) * player.speed
+			advance_events(&player, &audio)
+			if player.time > player.song.duration_sec + END_PAD_SEC {
+				restart(&player, &audio)
+			}
+		}
+		audio_update(&audio)
 
 		// --- Draw -----------------------------------------------------------
+		active_keys: [128]bool
 		rl.BeginDrawing()
-		rl.ClearBackground({18, 18, 24, 255})
-
-		if loaded {
-			rl.DrawText("Loaded:", 20, 20, 24, rl.RAYWHITE)
-			rl.DrawText(strings.clone_to_cstring(current_path, context.temp_allocator), 20, 52, 20, rl.SKYBLUE)
-			rl.DrawText(
-				fmt.ctprintf(
-					"Format: %v    Tracks: %d    %s",
-					file.format,
-					len(file.tracks),
-					division_text(file.division),
-				),
-				20, 88, 20, rl.LIGHTGRAY,
-			)
-			rl.DrawText("(piano roll + audio coming next — see console for details)", 20, 120, 18, rl.GRAY)
-		} else if load_error != .None {
-			rl.DrawText(fmt.ctprintf("Load failed: %v", load_error), 20, 20, 24, rl.RED)
-			rl.DrawText("Drop a valid .mid file onto the window", 20, 56, 20, rl.LIGHTGRAY)
-		} else {
-			rl.DrawText("Drop a .mid file onto this window", 20, 20, 28, rl.RAYWHITE)
+		rl.ClearBackground({16, 16, 22, 255})
+		if player.loaded {
+			draw_falling_notes(player.song, player.time, screen_w, screen_h, &active_keys)
 		}
-
+		draw_keyboard(screen_w, screen_h, &active_keys)
+		draw_overlay(player, screen_w, screen_h)
 		rl.EndDrawing()
 
-		// Reclaim per-frame scratch allocations (ctprintf / clone_to_cstring).
 		free_all(context.temp_allocator)
 	}
 
-	if loaded do midi_destroy(&file)
-	if current_path != "" do delete(current_path)
+	unload_song(&player)
 }
 
-// Parse `path` into `file`, replacing any previously loaded file. Returns the
-// updated (loaded, path, error) state. On failure the previous file is still
-// freed and `loaded` becomes false.
-try_load :: proc(
-	file: ^MIDI_File,
-	path: string,
-	was_loaded: bool,
-	old_path: string,
-) -> (loaded: bool, current_path: string, err: MIDI_Error) {
-	if was_loaded do midi_destroy(file)
-	if old_path != "" do delete(old_path)
+// Advance the event cursor, firing every note on/off up to the current time.
+advance_events :: proc(p: ^Player, a: ^Audio) {
+	for p.cursor < len(p.song.events) && p.song.events[p.cursor].time <= p.time {
+		e := p.song.events[p.cursor]
+		if e.on {
+			audio_note_on(a, e.key, e.velocity, e.track)
+		} else {
+			audio_note_off(a, e.key, e.track)
+		}
+		p.cursor += 1
+	}
+}
 
-	new_file, perr := midi_load(path)
-	if perr != .None {
-		fmt.eprintfln("Failed to load %q: %v", path, perr)
-		return false, "", perr
+handle_controls :: proc(p: ^Player, a: ^Audio) {
+	if rl.IsKeyPressed(.SPACE) && p.loaded {
+		p.paused = !p.paused
+		if p.paused {
+			rl.PauseAudioStream(a.stream)
+		} else {
+			rl.ResumeAudioStream(a.stream)
+		}
+	}
+	if rl.IsKeyPressed(.ONE) do p.speed = 0.5
+	if rl.IsKeyPressed(.TWO) do p.speed = 1.0
+	if rl.IsKeyPressed(.THREE) do p.speed = 2.0
+	if rl.IsKeyPressed(.R) && p.loaded do restart(p, a)
+}
+
+restart :: proc(p: ^Player, a: ^Audio) {
+	p.time = 0
+	p.cursor = 0
+	audio_all_off(a)
+}
+
+// Parse `path`, replace any currently loaded song, and reset playback.
+load_song :: proc(p: ^Player, a: ^Audio, path: string) {
+	file, err := midi_load(path)
+	if err != .None {
+		fmt.eprintfln("Failed to load %q: %v", path, err)
+		return
 	}
 
-	file^ = new_file
-	midi_print_summary(file^, path)
-	return true, strings.clone(path), .None
+	unload_song(p)
+	audio_all_off(a)
+
+	p.song = build_song(file)
+	p.path = strings.clone(path)
+	p.display_name = strings.clone(filepath.base(path))
+	p.loaded = true
+	p.time = 0
+	p.cursor = 0
+	p.paused = false
+	rl.ResumeAudioStream(a.stream)
+
+	midi_print_summary(file, path)
+	fmt.printfln(
+		"  -> %d notes, %.1fs, %.0f BPM",
+		len(p.song.notes), p.song.duration_sec, p.song.initial_bpm,
+	)
+	midi_destroy(&file) // notes/events are now resolved into the Song
 }
 
-division_text :: proc(d: Time_Division) -> string {
-	if d.is_smpte {
-		return fmt.tprintf("SMPTE %d fps, %d ticks/frame", d.fps, d.ticks_per_frame)
-	}
-	return fmt.tprintf("%d ticks/quarter", d.ticks_per_quarter)
+unload_song :: proc(p: ^Player) {
+	if !p.loaded do return
+	song_destroy(&p.song)
+	delete(p.path)
+	delete(p.display_name)
+	p.loaded = false
+	p.path = ""
+	p.display_name = ""
 }
 
-// Print a human-readable summary of a parsed file to the console: useful for
-// verifying the parser against real-world .mid files.
+// Print a human-readable summary of a parsed file to the console.
 midi_print_summary :: proc(file: MIDI_File, path: string) {
 	fmt.println("───────────────────────────────────────────────")
 	fmt.printfln("MIDI: %s", path)
 	fmt.printfln("  format:   %v", file.format)
-	fmt.printfln("  division: %s", division_text(file.division))
-	fmt.printfln("  tracks:   %d", len(file.tracks))
-
-	for track, i in file.tracks {
-		notes, tempo_us: int
-		first_tempo: u32 = 0
-		end_tick: u64 = 0
-		for ev in track.events {
-			#partial switch d in ev.data {
-			case Note_On:
-				notes += 1
-			case Set_Tempo:
-				if first_tempo == 0 do first_tempo = d.us_per_quarter
-				tempo_us += 1
-			}
-			end_tick = max(end_tick, ev.tick)
-		}
-		bpm := first_tempo > 0 ? 60_000_000.0 / f64(first_tempo) : 0
-		fmt.printfln(
-			"  track %d: %d events, %d notes, %d tempo change(s), first BPM %.1f, length %d ticks",
-			i, len(track.events), notes, tempo_us, bpm, end_tick,
-		)
+	if file.division.is_smpte {
+		fmt.printfln("  division: SMPTE %d fps, %d ticks/frame", file.division.fps, file.division.ticks_per_frame)
+	} else {
+		fmt.printfln("  division: %d ticks/quarter", file.division.ticks_per_quarter)
 	}
-	fmt.println("───────────────────────────────────────────────")
+	fmt.printfln("  tracks:   %d", len(file.tracks))
 }

@@ -30,11 +30,26 @@ Once the window is open, **drag and drop** any `.mid` file onto it to load it.
 A summary of the parsed file (format, division, tracks, note counts, tempo) is
 printed to the console — handy for verifying the parser against real files.
 
-A tiny test file is included at [`assets/sample.mid`](assets/sample.mid):
+Two example files are included:
 
 ```sh
-odin run . -- assets/sample.mid
+odin run . -- assets/demo.mid    # 2-track melody + chords (good first look)
+odin run . -- assets/sample.mid  # minimal 2-note file
 ```
+
+## Controls
+
+| Key       | Action                |
+|-----------|-----------------------|
+| `Space`   | Pause / resume        |
+| `1`       | 0.5× speed            |
+| `2`       | 1× speed              |
+| `3`       | 2× speed              |
+| `R`       | Restart from the beginning |
+| drag/drop | Load another `.mid`   |
+
+Playback loops automatically at the end. The speed multiplier changes tempo,
+not pitch.
 
 ## Testing
 
@@ -50,25 +65,27 @@ odin test .
 
 ```
 resonance/
-├── main.odin        # entry point: window, drag-and-drop, parser harness
+├── main.odin        # entry point, playback engine, controls
 ├── midi.odin        # MIDI binary parser (Format 0 & 1)
 ├── midi_test.odin   # parser unit tests
-├── piano_roll.odin  # falling-note rendering + keyboard   (planned)
-├── audio.odin       # sine-wave synthesis + mixing         (planned)
-├── ui.odin          # BPM display, speed controls          (planned)
+├── timeline.odin    # tick→seconds tempo map, note + event extraction
+├── piano_roll.odin  # falling-note rendering + 88-key keyboard
+├── audio.odin       # sine-wave synthesis + polyphonic mixing
+├── ui.odin          # BPM display, speed/pause overlay, progress bar
 └── assets/
-    └── sample.mid   # small test file
+    ├── demo.mid     # 2-track melody + chords
+    └── sample.mid   # minimal 2-note file
 ```
 
 ## Roadmap
 
 - [x] **MIDI parser** — Format 0/1, variable-length quantities, running status,
       note on/off, velocity, delta/absolute ticks, tempo & meta events, SysEx
-- [ ] **Piano-roll renderer** — falling note blocks, 88-key keyboard, per-octave colors
-- [ ] **Multi-track rendering** — one color per track, layered
-- [ ] **Audio playback** — sine-wave synthesis (equal temperament, A4 = 440 Hz), polyphonic mixing
-- [ ] **Playback controls** — 0.5×/1×/2× speed, pause/resume, BPM display
-- [ ] **Drag-and-drop** loading at runtime
+- [x] **Piano-roll renderer** — falling note blocks, 88-key keyboard, per-octave shading
+- [x] **Multi-track rendering** — one color per track, layered
+- [x] **Audio playback** — sine-wave synthesis (equal temperament, A4 = 440 Hz), polyphonic mixing
+- [x] **Playback controls** — 0.5×/1×/2× speed, pause/resume, BPM display
+- [x] **Drag-and-drop** loading at runtime
 
 ## License
 
