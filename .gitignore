@@ -1,0 +1,21 @@
+# Compiled binary (output of `odin build . -out:resonance`)
+/resonance
+*.exe
+
+# Build / object artifacts
+*.o
+*.obj
+*.bin
+*.so
+*.dll
+*.dylib
+*.pdb
+*.lib
+*.a
+*.ll
+
+# Editor / OS junk
+.DS_Store
+.idea/
+.vscode/
+*.swp
