@@ -69,11 +69,38 @@ note_color :: proc(track: int, key: u8) -> rl.Color {
 	return rl.ColorBrightness(base, f32(octave - 5) * 0.07)
 }
 
+@(private = "file")
+with_alpha :: proc(c: rl.Color, a: u8) -> rl.Color {
+	return {c.r, c.g, c.b, a}
+}
+
+// Deep atmospheric backdrop: a vertical gradient with a soft glow near the top,
+// drawn before everything else.
+draw_background :: proc(screen_w, screen_h: f32) {
+	rl.DrawRectangleGradientV(0, 0, i32(screen_w), i32(screen_h), {22, 21, 34, 255}, {9, 9, 14, 255})
+	rl.DrawCircleGradient(i32(screen_w / 2), i32(screen_h * 0.12), screen_w * 0.55, {52, 58, 96, 38}, {52, 58, 96, 0})
+}
+
+// Faint vertical guide lines at every octave boundary (each C), giving the roll
+// a subtle musical grid.
+@(private = "file")
+draw_octave_guides :: proc(geo: [NUM_KEYS]Key_Geo, roll_bottom: f32) {
+	for k in 0 ..< NUM_KEYS {
+		midi := NOTE_MIN + k
+		if midi % 12 != 0 do continue // C
+		x := geo[k].x
+		col := rl.Color{255, 255, 255, midi == 60 ? 18 : 9} // brighter at middle C
+		rl.DrawLineEx({x, 0}, {x, roll_bottom}, 1, col)
+	}
+}
+
 // Draw the falling notes. `active_keys[midi]` is set to true for any note that
 // is currently sounding, so the keyboard pass can highlight it.
 draw_falling_notes :: proc(song: Song, time: f64, screen_w, screen_h: f32, active_keys: ^[128]bool) {
 	geo := keyboard_layout(screen_w)
 	roll_bottom := screen_h - KEYBOARD_HEIGHT
+
+	draw_octave_guides(geo, roll_bottom)
 
 	for n in song.notes {
 		if n.end_sec < time || n.start_sec > time + LOOKAHEAD_SEC do continue
@@ -83,14 +110,44 @@ draw_falling_notes :: proc(song: Song, time: f64, screen_w, screen_h: f32, activ
 
 		y_start := roll_bottom - f32((n.start_sec - time) / LOOKAHEAD_SEC) * roll_bottom
 		y_end := roll_bottom - f32((n.end_sec - time) / LOOKAHEAD_SEC) * roll_bottom
-		rect := rl.Rectangle{g.x + 1, y_end, max(g.w - 2, 1), max(y_start - y_end, 2)}
+		y_start = min(y_start, roll_bottom) // don't bleed into the keyboard
+		w := max(g.w - 2, 1)
+		h := max(y_start - y_end, 3)
+		rect := rl.Rectangle{g.x + 1, y_end, w, h}
+		round := min(7 / min(w, h), 0.5)
 
-		col := note_color(n.track, n.key)
-		if n.start_sec <= time && time < n.end_sec {
-			active_keys[n.key] = true
-			col = rl.ColorBrightness(col, 0.35)
+		base := note_color(n.track, n.key)
+		active := n.start_sec <= time && time < n.end_sec
+		if active do active_keys[n.key] = true
+
+		// Soft glow around the block — wider and brighter while it's sounding.
+		glow_layers := active ? 3 : 1
+		for i in 0 ..< glow_layers {
+			grow := f32(i + 1) * (active ? 4 : 2.5)
+			a := u8(active ? 60 - i * 16 : 26)
+			gr := rl.Rectangle{rect.x - grow, rect.y - grow, rect.width + grow * 2, rect.height + grow * 2}
+			rl.DrawRectangleRounded(gr, round, 6, with_alpha(base, a))
 		}
-		rl.DrawRectangleRounded(rect, 0.35, 4, col)
+
+		// Glossy body: darker base + a lighter sheen across the top half.
+		body := active ? rl.ColorBrightness(base, 0.25) : base
+		rl.DrawRectangleRounded(rect, round, 6, rl.ColorBrightness(body, -0.10))
+		sheen := rl.Rectangle{rect.x, rect.y, rect.width, max(rect.height * 0.5, 3)}
+		rl.DrawRectangleRounded(sheen, round, 6, with_alpha(rl.ColorBrightness(body, 0.45), 150))
+
+		// Crisp bright cap on the leading (top) edge.
+		rl.DrawRectangleRounded({rect.x, rect.y, rect.width, 2.5}, 1, 4,
+			with_alpha(rl.ColorBrightness(base, 0.7), 235))
+
+		// When sounding, send a soft beam of light down onto the key.
+		if active {
+			beam_h := f32(46)
+			cx := rect.x + rect.width / 2
+			rl.DrawRectangleGradientV(
+				i32(cx - rect.width * 0.6), i32(roll_bottom - beam_h),
+				i32(rect.width * 1.2), i32(beam_h),
+				with_alpha(base, 0), with_alpha(rl.ColorBrightness(base, 0.4), 130))
+		}
 	}
 }
 
@@ -100,27 +157,48 @@ draw_keyboard :: proc(screen_w, screen_h: f32, active_keys: ^[128]bool) {
 	top := screen_h - KEYBOARD_HEIGHT
 	black_h := f32(KEYBOARD_HEIGHT) * 0.62
 
-	// White keys first.
+	// Glow rising off any active key, behind the keys themselves.
+	for k in 0 ..< NUM_KEYS {
+		midi := NOTE_MIN + k
+		if !active_keys[midi] do continue
+		g := geo[k]
+		rl.DrawRectangleGradientV(
+			i32(g.x - g.w * 0.4), i32(top - 60), i32(g.w * 1.8), 60,
+			{120, 205, 255, 0}, {120, 205, 255, 90})
+	}
+
+	// White keys: soft vertical gradient, brighter when active.
 	for k in 0 ..< NUM_KEYS {
 		g := geo[k]
 		if g.black do continue
 		midi := NOTE_MIN + k
-		rect := rl.Rectangle{g.x, top, g.w, KEYBOARD_HEIGHT}
-		col := active_keys[midi] ? KEY_HIGHLIGHT : rl.Color{238, 238, 240, 255}
-		rl.DrawRectangleRec(rect, col)
-		rl.DrawRectangleLinesEx(rect, 1, {30, 30, 36, 255})
+		if active_keys[midi] {
+			rl.DrawRectangleGradientV(i32(g.x), i32(top), i32(g.w), KEYBOARD_HEIGHT,
+				{180, 226, 255, 255}, {120, 196, 250, 255})
+		} else {
+			rl.DrawRectangleGradientV(i32(g.x), i32(top), i32(g.w), KEYBOARD_HEIGHT,
+				{246, 247, 250, 255}, {206, 209, 220, 255})
+		}
+		rl.DrawRectangleLinesEx({g.x, top, g.w, KEYBOARD_HEIGHT}, 1, {26, 26, 32, 200})
 	}
 
-	// Black keys on top.
+	// Black keys on top, with a little gloss.
 	for k in 0 ..< NUM_KEYS {
 		g := geo[k]
 		if !g.black do continue
 		midi := NOTE_MIN + k
-		rect := rl.Rectangle{g.x, top, g.w, black_h}
-		col := active_keys[midi] ? rl.ColorBrightness(KEY_HIGHLIGHT, -0.25) : rl.Color{24, 24, 30, 255}
-		rl.DrawRectangleRec(rect, col)
+		if active_keys[midi] {
+			rl.DrawRectangleGradientV(i32(g.x), i32(top), i32(g.w), i32(black_h),
+				{96, 176, 232, 255}, {52, 120, 180, 255})
+		} else {
+			rl.DrawRectangleGradientV(i32(g.x), i32(top), i32(g.w), i32(black_h),
+				{40, 40, 50, 255}, {16, 16, 22, 255})
+		}
+		// thin highlight along the top edge of the key
+		rl.DrawRectangle(i32(g.x), i32(top), i32(g.w), 2, {255, 255, 255, 40})
 	}
 
-	// The "now" line where notes meet the keyboard.
-	rl.DrawLineEx({0, top}, {screen_w, top}, 2, {120, 205, 255, 200})
+	// The "now" line: a glow fading upward, then a crisp bright line.
+	rl.DrawRectangleGradientV(0, i32(top - 26), i32(screen_w), 26, {120, 205, 255, 0}, {120, 205, 255, 55})
+	rl.DrawLineEx({0, top}, {screen_w, top}, 2, {150, 215, 255, 220})
 }

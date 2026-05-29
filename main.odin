@@ -32,6 +32,9 @@ main :: proc() {
 	defer rl.CloseWindow()
 	rl.SetTargetFPS(60)
 
+	ui_load_assets()
+	defer ui_unload_assets()
+
 	audio: Audio
 	audio_init(&audio)
 	defer audio_shutdown(&audio)
@@ -70,6 +73,7 @@ main :: proc() {
 		active_keys: [128]bool
 		rl.BeginDrawing()
 		rl.ClearBackground({16, 16, 22, 255})
+		draw_background(screen_w, screen_h)
 		if player.loaded {
 			draw_falling_notes(player.song, player.time, screen_w, screen_h, &active_keys)
 		}
