@@ -7,6 +7,7 @@ package resonance
 // the corresponding key as they land. Notes are coloured per track, shaded by
 // octave so the layered tracks and registers stay readable.
 
+import "core:fmt"
 import rl "vendor:raylib"
 
 NOTE_MIN        :: 21  // A0
@@ -78,7 +79,7 @@ with_alpha :: proc(c: rl.Color, a: u8) -> rl.Color {
 // drawn before everything else.
 draw_background :: proc(screen_w, screen_h: f32) {
 	rl.DrawRectangleGradientV(0, 0, i32(screen_w), i32(screen_h), {22, 21, 34, 255}, {9, 9, 14, 255})
-	rl.DrawCircleGradient(i32(screen_w / 2), i32(screen_h * 0.12), screen_w * 0.55, {52, 58, 96, 38}, {52, 58, 96, 0})
+	rl.DrawCircleGradient({screen_w / 2, screen_h * 0.12}, screen_w * 0.55, {52, 58, 96, 38}, {52, 58, 96, 0})
 }
 
 // Faint vertical guide lines at every octave boundary (each C), giving the roll
@@ -94,9 +95,43 @@ draw_octave_guides :: proc(geo: [NUM_KEYS]Key_Geo, roll_bottom: f32) {
 	}
 }
 
+// Screen y for a song time, given the roll's bottom edge ("now").
+@(private = "file")
+time_to_y :: proc(t, now: f64, roll_bottom: f32) -> f32 {
+	return roll_bottom - f32((t - now) / LOOKAHEAD_SEC) * roll_bottom
+}
+
+// Horizontal beat and bar lines scrolling down with the notes, with the bar
+// number tucked against the left edge. Bars are brighter than beats; the
+// downbeat that is about to land gets a soft highlight so the pulse reads.
+draw_beat_grid :: proc(song: Song, time: f64, screen_w, screen_h: f32) {
+	roll_bottom := screen_h - KEYBOARD_HEIGHT
+	if len(song.beats) == 0 do return
+
+	i := song_beat_index(song, time)
+	if i > 0 do i -= 1 // include the beat currently in force
+	for ; i < len(song.beats); i += 1 {
+		b := song.beats[i]
+		if b.time > time + LOOKAHEAD_SEC do break
+		y := time_to_y(b.time, time, roll_bottom)
+		if y < 0 || y > roll_bottom do continue
+
+		if b.beat == 1 {
+			rl.DrawLineEx({0, y}, {screen_w, y}, 1, {255, 255, 255, 34})
+			label := fmt.ctprintf("%d", b.bar)
+			draw_text(label, screen_w - 10 - text_size(label, 15).x, y - 20, 15, {150, 156, 178, 160})
+		} else {
+			rl.DrawLineEx({0, y}, {screen_w, y}, 1, {255, 255, 255, 11})
+		}
+	}
+}
+
 // Draw the falling notes. `active_keys[midi]` is set to true for any note that
-// is currently sounding, so the keyboard pass can highlight it.
-draw_falling_notes :: proc(song: Song, time: f64, screen_w, screen_h: f32, active_keys: ^[128]bool) {
+// is currently sounding, so the keyboard pass can highlight it. Notes on muted
+// tracks are drawn as faint outlines and never light up the keys.
+draw_falling_notes :: proc(p: ^Player, screen_w, screen_h: f32, active_keys: ^[128]bool) {
+	song := p.song
+	time := p.time
 	geo := keyboard_layout(screen_w)
 	roll_bottom := screen_h - KEYBOARD_HEIGHT
 
@@ -107,6 +142,7 @@ draw_falling_notes :: proc(song: Song, time: f64, screen_w, screen_h: f32, activ
 		k := int(n.key) - NOTE_MIN
 		if k < 0 || k >= NUM_KEYS do continue
 		g := geo[k]
+		audible := track_audible(p, n.track)
 
 		y_start := roll_bottom - f32((n.start_sec - time) / LOOKAHEAD_SEC) * roll_bottom
 		y_end := roll_bottom - f32((n.end_sec - time) / LOOKAHEAD_SEC) * roll_bottom
@@ -118,6 +154,13 @@ draw_falling_notes :: proc(song: Song, time: f64, screen_w, screen_h: f32, activ
 
 		base := note_color(n.track, n.key)
 		active := n.start_sec <= time && time < n.end_sec
+
+		if !audible {
+			// Ghost: a dim outline so you can still follow the muted part.
+			rl.DrawRectangleRounded(rect, round, 6, with_alpha(base, 22))
+			rl.DrawRectangleRoundedLinesEx(rect, round, 6, 1, with_alpha(base, 80))
+			continue
+		}
 		if active do active_keys[n.key] = true
 
 		// Soft glow around the block — wider and brighter while it's sounding.

@@ -8,6 +8,7 @@ package resonance
 
 import "core:math"
 import "core:slice"
+import "core:strings"
 
 // A single sounding note, resolved to absolute seconds.
 Note :: struct {
@@ -28,12 +29,38 @@ Play_Event :: struct {
 	track:    int,
 }
 
+// Per-track metadata gathered while flattening, for the track panel.
+Track_Info :: struct {
+	name:       string, // owned; "" when the file names no track
+	note_count: int,
+	lo, hi:     u8,     // pitch range of the track's notes
+}
+
+// One beat on the metrical grid. `bar`/`beat` are 1-based for display.
+Beat :: struct {
+	time:   f64,
+	bar:    int,
+	beat:   int,
+	num:    u8, // time signature in force at this beat
+	den:    u8,
+}
+
+// A stretch of constant tempo, in seconds.
+Tempo_Seg :: struct {
+	start_sec: f64,
+	bpm:       f64,
+}
+
 Song :: struct {
 	notes:        [dynamic]Note,
 	events:       [dynamic]Play_Event, // sorted by time (offs before ons on ties)
+	tracks:       [dynamic]Track_Info,
+	beats:        [dynamic]Beat,       // sorted by time; empty for SMPTE files
+	tempos:       [dynamic]Tempo_Seg,  // sorted by start_sec, first at 0
 	track_count:  int,
 	duration_sec: f64,
 	initial_bpm:  f64,
+	key_name:     cstring,             // e.g. "G major"; "" when unknown
 }
 
 @(private = "file")
@@ -68,6 +95,10 @@ build_song :: proc(file: MIDI_File) -> (song: Song) {
 	}
 
 	song.initial_bpm = 60_000_000.0 / f64(tempos[0].us_per_quarter)
+	song.tempos = make([dynamic]Tempo_Seg)
+	for t, i in tempos {
+		append(&song.tempos, Tempo_Seg{cum[i], 60_000_000.0 / f64(t.us_per_quarter)})
+	}
 
 	// Walk each track, pairing note-ons with their matching note-offs.
 	pending: [16][128]struct {
@@ -75,10 +106,22 @@ build_song :: proc(file: MIDI_File) -> (song: Song) {
 		tick:  u64,
 		vel:   u8,
 	}
+	song.tracks = make([dynamic]Track_Info, len(file.tracks))
+	last_tick: u64
 	for track, ti in file.tracks {
 		pending = {}
+		info := &song.tracks[ti]
+		info.lo = 127
 		for ev in track.events {
+			last_tick = max(last_tick, ev.tick)
 			#partial switch d in ev.data {
+			case Meta_Text:
+				// 0x03 = sequence/track name. Copy it: `text` aliases file bytes.
+				if d.kind == 0x03 && info.name == "" {
+					info.name = strings.clone(strings.trim_space(d.text))
+				}
+			case Key_Signature:
+				if song.key_name == "" do song.key_name = key_signature_name(d)
 			case Note_On:
 				// A second on without an off: close the previous span first.
 				if pending[d.channel][d.key].on {
@@ -95,6 +138,15 @@ build_song :: proc(file: MIDI_File) -> (song: Song) {
 		}
 	}
 
+	for n in song.notes {
+		info := &song.tracks[n.track]
+		info.note_count += 1
+		info.lo = min(info.lo, n.key)
+		info.hi = max(info.hi, n.key)
+	}
+
+	song.beats = build_beat_grid(file, tempos[:], cum[:], last_tick)
+
 	// Build the playback event stream and sort it.
 	for n in song.notes {
 		append(&song.events, Play_Event{n.start_sec, true, n.key, n.velocity, n.track})
@@ -110,9 +162,61 @@ build_song :: proc(file: MIDI_File) -> (song: Song) {
 }
 
 song_destroy :: proc(song: ^Song) {
+	for t in song.tracks do delete(t.name)
+	delete(song.tracks)
 	delete(song.notes)
 	delete(song.events)
+	delete(song.beats)
+	delete(song.tempos)
 	song^ = {}
+}
+
+// --- queries ----------------------------------------------------------------
+
+// Tempo in force at `time`.
+song_bpm_at :: proc(song: Song, time: f64) -> f64 {
+	bpm := song.initial_bpm
+	for t in song.tempos {
+		if t.start_sec > time do break
+		bpm = t.bpm
+	}
+	return bpm
+}
+
+// Index of the first beat at or after `time` (== len when past the end).
+song_beat_index :: proc(song: Song, time: f64) -> int {
+	lo, hi := 0, len(song.beats)
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if song.beats[mid].time < time {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
+}
+
+// The beat in force at `time` (the last one that started at or before it).
+song_beat_at :: proc(song: Song, time: f64) -> (Beat, bool) {
+	i := song_beat_index(song, time)
+	if i < len(song.beats) && song.beats[i].time == time do return song.beats[i], true
+	if i == 0 do return {}, false
+	return song.beats[i - 1], true
+}
+
+// Index of the first play event at or after `time`.
+song_event_index :: proc(song: Song, time: f64) -> int {
+	lo, hi := 0, len(song.events)
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if song.events[mid].time < time {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -155,6 +259,64 @@ build_tempo_map :: proc(file: MIDI_File) -> [dynamic]Tempo_Point {
 	}
 	for t in raw do append(&tempos, t)
 	return tempos
+}
+
+// Lay a beat/bar grid over the whole song, honouring every time signature
+// change. Metrical division only; SMPTE files get no grid.
+@(private = "file")
+build_beat_grid :: proc(file: MIDI_File, tempos: []Tempo_Point, cum: []f64, last_tick: u64) -> [dynamic]Beat {
+	beats := make([dynamic]Beat)
+	if file.division.is_smpte || last_tick == 0 do return beats
+
+	Sig :: struct { tick: u64, num, den: u8 }
+	sigs := make([dynamic]Sig, context.temp_allocator)
+	for track in file.tracks {
+		for ev in track.events {
+			if ts, ok := ev.data.(Time_Signature); ok && ts.numerator > 0 {
+				den := u8(1) << clamp(ts.denominator, 0, 6) // stored as a power of two
+				append(&sigs, Sig{ev.tick, ts.numerator, den})
+			}
+		}
+	}
+	slice.sort_by(sigs[:], proc(a, b: Sig) -> bool { return a.tick < b.tick })
+	if len(sigs) == 0 || sigs[0].tick != 0 {
+		inject_at(&sigs, 0, Sig{0, 4, 4})
+	}
+
+	tpq := u64(file.division.ticks_per_quarter)
+	if tpq == 0 do tpq = 480
+
+	bar := 1
+	for sig, si in sigs {
+		seg_end := si + 1 < len(sigs) ? sigs[si + 1].tick : last_tick + 1
+		beat_ticks := max(tpq * 4 / u64(sig.den), 1)
+		tick := sig.tick
+		beat := 1
+		for tick < seg_end {
+			append(&beats, Beat{tick_to_sec(tick, tempos, cum, file.division), bar, beat, sig.num, sig.den})
+			tick += beat_ticks
+			beat += 1
+			if beat > int(sig.num) {
+				beat = 1
+				bar += 1
+			}
+		}
+		// A signature change mid-bar starts a fresh bar.
+		if beat != 1 do bar += 1
+	}
+	return beats
+}
+
+// Human-readable key name from a key-signature meta event.
+@(private = "file")
+key_signature_name :: proc(k: Key_Signature) -> cstring {
+	MAJOR := [?]cstring{"Cb major", "Gb major", "Db major", "Ab major", "Eb major", "Bb major", "F major",
+		"C major", "G major", "D major", "A major", "E major", "B major", "F# major", "C# major"}
+	MINOR := [?]cstring{"Ab minor", "Eb minor", "Bb minor", "F minor", "C minor", "G minor", "D minor",
+		"A minor", "E minor", "B minor", "F# minor", "C# minor", "G# minor", "D# minor", "A# minor"}
+	i := int(k.sharps_flats) + 7
+	if i < 0 || i >= len(MAJOR) do return ""
+	return k.minor ? MINOR[i] : MAJOR[i]
 }
 
 // Seconds spanned by `ticks` at a given tempo / division.

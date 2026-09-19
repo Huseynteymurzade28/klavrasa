@@ -3,8 +3,19 @@
 A MIDI piano-roll visualizer written in [Odin](https://odin-lang.org/) using [Raylib](https://www.raylib.com/).
 
 Resonance loads Standard MIDI Files and renders them as a falling-note piano roll
-with real-time audio playback via sine-wave synthesis. The MIDI parser is written
-from scratch — no external MIDI libraries.
+with real-time audio playback from a small built-in synthesizer. The MIDI parser
+is written from scratch — no external MIDI libraries.
+
+## Features
+
+- Falling-note piano roll over an 88-key keyboard, colour-coded per track
+- Beat and bar grid that follows every time-signature change, with bar numbers
+- Tempo map (tempo changes are honoured; the live BPM is shown on screen)
+- Built-in polyphonic synth with five sounds — piano, sine, triangle, square,
+  saw — each with its own ADSR envelope; square/saw are band-limited (PolyBLEP)
+- Track panel with per-track mute and solo; muted parts stay visible as ghosts
+- Seek anywhere: click or drag the progress bar, or step with the arrow keys
+- Key signature, time signature and track names read from the file
 
 ## Requirements
 
@@ -39,14 +50,21 @@ odin run . -- assets/sample.mid  # minimal 2-note file
 
 ## Controls
 
-| Key       | Action                |
-|-----------|-----------------------|
-| `Space`   | Pause / resume        |
-| `1`       | 0.5× speed            |
-| `2`       | 1× speed              |
-| `3`       | 2× speed              |
-| `R`       | Restart from the beginning |
-| drag/drop | Load another `.mid`   |
+| Key / mouse         | Action                                        |
+|---------------------|-----------------------------------------------|
+| `Space`             | Pause / resume                                |
+| `←` `→`             | Seek 5 seconds back / forward                 |
+| click / drag bar    | Seek to that point                            |
+| `Home` / `R`        | Restart from the beginning                    |
+| `1` `2` `3`         | 0.5× / 1× / 2× speed                          |
+| `-` `+`             | Speed in 0.25× steps (0.25×–4×)               |
+| `W`                 | Cycle sound: piano, sine, triangle, square, saw |
+| `↑` `↓`             | Volume                                        |
+| click track row     | Mute / unmute that track                      |
+| right-click row     | Solo that track (also `Shift`+click)          |
+| `F1`–`F8`           | Mute track 1–8 (`Shift` to solo)              |
+| `H`                 | Show all shortcuts                            |
+| drag/drop           | Load another `.mid`                           |
 
 Playback loops automatically at the end. The speed multiplier changes tempo,
 not pitch.
