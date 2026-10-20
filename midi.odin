@@ -1,4 +1,4 @@
-package resonance
+package klavrasa
 
 // MIDI binary parser, implemented from scratch (no external MIDI libraries).
 //

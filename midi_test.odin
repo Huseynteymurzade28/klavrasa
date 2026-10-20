@@ -1,4 +1,4 @@
-package resonance
+package klavrasa
 
 import "core:slice"
 import "core:testing"

@@ -1,5 +1,5 @@
-# Compiled binary (output of `odin build . -out:resonance`)
-/resonance
+# Compiled binary (output of `odin build . -out:klavrasa`)
+/klavrasa
 *.exe
 
 # Build / object artifacts

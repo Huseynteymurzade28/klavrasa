@@ -1,10 +1,12 @@
-# Resonance
+# Klavrasa
 
 A MIDI piano-roll visualizer written in [Odin](https://odin-lang.org/) using [Raylib](https://www.raylib.com/).
 
-Resonance loads Standard MIDI Files and renders them as a falling-note piano roll
+Klavrasa loads Standard MIDI Files and renders them as a falling-note piano roll
 with real-time audio playback from a small built-in synthesizer. The MIDI parser
 is written from scratch — no external MIDI libraries.
+
+![Klavrasa playing demo.mid](docs/screenshots/playing.png)
 
 ## Features
 
@@ -33,13 +35,27 @@ odin run .
 odin run . -- song.mid
 
 # Or build a standalone binary
-odin build . -out:resonance
-./resonance song.mid
+odin build . -out:klavrasa
+./klavrasa song.mid
 ```
 
 Once the window is open, **drag and drop** any `.mid` file onto it to load it.
 A summary of the parsed file (format, division, tracks, note counts, tempo) is
 printed to the console — handy for verifying the parser against real files.
+
+> **Arch Linux: `cannot find -l:/usr/lib/odin/vendor/raylib//linux/libraylib.so.600`**
+>
+> Odin's raylib bindings link against `libraylib.so.600` (raylib 6.0), which the
+> `odin` package symlinks to `/usr/lib/libraylib.so.600`. When the system
+> `raylib` package is newer (e.g. 6.2 ships `libraylib.so.620`), that symlink is
+> dangling and linking fails. Point it at the installed library:
+>
+> ```sh
+> sudo ln -sf /usr/lib/libraylib.so.620 /usr/lib/libraylib.so.600
+> ```
+>
+> (Adjust `620` to whatever `ls /usr/lib/libraylib.so.*` shows.) Updating `odin`
+> to a release built against the same raylib version also fixes it.
 
 Two example files are included:
 
@@ -47,6 +63,12 @@ Two example files are included:
 odin run . -- assets/demo.mid    # 2-track melody + chords (good first look)
 odin run . -- assets/sample.mid  # minimal 2-note file
 ```
+
+## Screenshots
+
+| Start screen | Shortcut sheet (`H`) |
+|:---:|:---:|
+| ![Empty state: drop a .mid file to begin](docs/screenshots/empty.png) | ![Shortcut overlay](docs/screenshots/help.png) |
 
 ## Controls
 
@@ -82,7 +104,7 @@ odin test .
 ## Project structure
 
 ```
-resonance/
+klavrasa/
 ├── main.odin        # entry point, playback engine, controls
 ├── midi.odin        # MIDI binary parser (Format 0 & 1)
 ├── midi_test.odin   # parser unit tests
@@ -90,6 +112,7 @@ resonance/
 ├── piano_roll.odin  # falling-note rendering + 88-key keyboard
 ├── audio.odin       # sine-wave synthesis + polyphonic mixing
 ├── ui.odin          # BPM display, speed/pause overlay, progress bar
+├── docs/screenshots # images used in this README
 └── assets/
     ├── demo.mid     # 2-track melody + chords
     └── sample.mid   # minimal 2-note file

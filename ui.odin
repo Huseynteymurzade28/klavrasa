@@ -1,4 +1,4 @@
-package resonance
+package klavrasa
 
 // Heads-up overlay and mouse interaction.
 //

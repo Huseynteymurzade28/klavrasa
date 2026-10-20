@@ -1,4 +1,4 @@
-package resonance
+package klavrasa
 
 // Polyphonic synthesizer driven by note-on / note-off calls.
 //

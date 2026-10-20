@@ -1,4 +1,4 @@
-package resonance
+package klavrasa
 
 // Turns parsed MIDI tracks into a playable, drawable timeline:
 //   * a tempo map that converts ticks to absolute seconds (honouring tempo

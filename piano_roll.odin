@@ -1,4 +1,4 @@
-package resonance
+package klavrasa
 
 // Piano-roll renderer: falling note blocks above an 88-key keyboard.
 //

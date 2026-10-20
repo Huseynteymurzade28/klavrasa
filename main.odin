@@ -1,4 +1,4 @@
-package resonance
+package klavrasa
 
 // Entry point and playback engine. Opens a window, loads MIDI files (via
 // drag-and-drop or a command-line argument), advances a song clock, fires
@@ -36,7 +36,7 @@ Player :: struct {
 
 main :: proc() {
 	rl.SetConfigFlags({.WINDOW_RESIZABLE, .MSAA_4X_HINT})
-	rl.InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Resonance — MIDI Piano Roll")
+	rl.InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Klavrasa — MIDI Piano Roll")
 	defer rl.CloseWindow()
 	rl.SetTargetFPS(60)
 
